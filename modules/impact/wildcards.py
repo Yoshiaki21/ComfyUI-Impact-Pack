@@ -185,10 +185,14 @@ def get_wildcard_list():
     Get list of all available wildcards.
 
     Returns:
+        - In no-cache mode: TXT metadata + YAML sub-keys (values not cached)
         - In full cache mode: all loaded wildcards
         - In on-demand mode: only loaded wildcards (same as get_loaded_wildcard_list)
     """
     with wildcard_lock:
+        if wildcards_nocache.is_enabled():
+            keys = set(available_wildcards.keys()) | set(loaded_wildcards.keys())
+            return [f"__{x}__" for x in sorted(keys)]
         if _on_demand_mode:
             return [f"__{x}__" for x in loaded_wildcards.keys()]
         return [f"__{x}__" for x in wildcard_dict.keys()]
@@ -203,6 +207,9 @@ def get_loaded_wildcard_list():
         In full cache mode, returns same as get_wildcard_list().
     """
     with wildcard_lock:
+        if wildcards_nocache.is_enabled():
+            keys = set(available_wildcards.keys()) | set(loaded_wildcards.keys())
+            return [f"__{x}__" for x in sorted(keys)]
         if _on_demand_mode:
             return [f"__{x}__" for x in loaded_wildcards.keys()]
         return [f"__{x}__" for x in wildcard_dict.keys()]
@@ -1173,6 +1180,27 @@ def wildcard_load():
             scan_paths.append(wildcards_path)
         if custom_wildcards_path and os.path.exists(custom_wildcards_path):
             scan_paths.append(custom_wildcards_path)
+
+        # No-cache mode (personal fork): values are always re-read from disk in
+        # get_wildcard_value, so skip the cache-size mode detection entirely.
+        # We still need metadata + YAML sub-keys so the UI dropdown can list
+        # every available wildcard.
+        if wildcards_nocache.is_enabled():
+            _on_demand_mode = False
+            txt_count = 0
+            yaml_count = 0
+            for p in scan_paths:
+                txt_count += scan_wildcard_metadata(p)
+                yaml_count += load_yaml_files_only(p)
+            logging.info(f"[Impact Pack] No-cache mode active. "
+                        f"Indexed {txt_count} TXT/YAML paths and "
+                        f"{len(loaded_wildcards)} YAML sub-keys for listing. "
+                        f"Wildcard values will be re-read from disk on every access.")
+            if custom_only:
+                logging.info(f"[Impact Pack] custom_wildcards is set -> using ONLY "
+                            f"{custom_wildcards_path} (default 'wildcards/' directory is ignored).")
+            logging.info("[Impact Pack] Wildcards loading done.")
+            return
 
         # Calculate total size of wildcard files (with early termination)
         cache_limit = get_cache_limit()
