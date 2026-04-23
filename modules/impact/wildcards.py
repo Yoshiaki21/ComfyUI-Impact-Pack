@@ -9,6 +9,7 @@ import nodes
 import numpy as np
 import yaml
 from impact import config, utils
+from impact import wildcards_nocache
 
 wildcards_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "wildcards"))
 
@@ -231,57 +232,9 @@ def find_wildcard_file(key):
     Returns:
         Tuple of (file_path, is_yaml_nested) if found, (None, False) otherwise
     """
-    # For YAML nested keys like "colors/warm", try parent file "colors.yaml"
-    # Also try exact match for TXT files or top-level YAML keys
-
-    # Case 1: Direct file match (TXT or top-level YAML)
-    potential_paths = [
-        f"{key}.txt",
-        f"{key}.yaml",
-        f"{key}.yml"
-    ]
-
-    for rel_path in potential_paths:
-        file_path = os.path.join(wildcards_path, rel_path)
-        if os.path.isfile(file_path):
-            return (file_path, file_path.endswith(('.yaml', '.yml')))
-
-    # Custom wildcards directory
-    try:
-        custom_path = config.get_config().get('custom_wildcards')
-        if custom_path and os.path.exists(custom_path):
-            for rel_path in potential_paths:
-                file_path = os.path.join(custom_path, rel_path)
-                if os.path.isfile(file_path):
-                    return (file_path, file_path.endswith(('.yaml', '.yml')))
-    except Exception:
-        pass
-
-    # Case 2: YAML nested key (e.g., "colors/warm" → "colors.yaml")
-    if '/' in key:
-        parent_key = key.split('/')[0]
-        yaml_paths = [
-            f"{parent_key}.yaml",
-            f"{parent_key}.yml"
-        ]
-
-        for rel_path in yaml_paths:
-            file_path = os.path.join(wildcards_path, rel_path)
-            if os.path.isfile(file_path):
-                return (file_path, True)
-
-        # Custom wildcards directory
-        try:
-            custom_path = config.get_config().get('custom_wildcards')
-            if custom_path and os.path.exists(custom_path):
-                for rel_path in yaml_paths:
-                    file_path = os.path.join(custom_path, rel_path)
-                    if os.path.isfile(file_path):
-                        return (file_path, True)
-        except Exception:
-            pass
-
-    return (None, False)
+    # Delegated to wildcards_nocache.find_file so custom-only mode is honored
+    # uniformly with the no-cache resolution path.
+    return wildcards_nocache.find_file(key, wildcards_path)
 
 
 def get_wildcard_value(key):
@@ -296,6 +249,12 @@ def get_wildcard_value(key):
         List of wildcard options (loaded if necessary), or None if not found
     """
     global loaded_wildcards
+
+    # No-cache mode (personal fork): always re-read from disk, skip caches entirely.
+    if wildcards_nocache.is_enabled():
+        return wildcards_nocache.load_value(
+            key, wildcards_path, load_txt_wildcard, yaml, wildcard_normalize
+        )
 
     # On-demand mode: dynamic file discovery and loading
     if _on_demand_mode:
@@ -1194,23 +1153,34 @@ def wildcard_load():
     loaded_wildcards = {}
     _on_demand_mode = False
 
-    with wildcard_lock:
-        # Calculate total size of wildcard files (with early termination)
-        cache_limit = get_cache_limit()
-        total_size = calculate_directory_size(wildcards_path, limit=cache_limit)
+    # Re-arm the one-shot runtime log so it fires on the next resolution.
+    wildcards_nocache.reset_runtime_log_flag()
 
-        # Add custom wildcards directory size if it exists
+    with wildcard_lock:
+        # Resolve custom_wildcards and custom-only mode once up front.
         custom_wildcards_path = None
+        custom_only = False
         try:
-            custom_wildcards_path = config.get_config().get('custom_wildcards')
-            if custom_wildcards_path and os.path.exists(custom_wildcards_path):
-                # Early termination: if already exceeded, don't scan custom dir
-                if total_size < cache_limit:
-                    custom_size = calculate_directory_size(custom_wildcards_path,
-                                                          limit=cache_limit - total_size)
-                    total_size += custom_size
+            cfg = config.get_config()
+            custom_wildcards_path = cfg.get('custom_wildcards')
+            custom_only = bool(cfg.get('custom_wildcards_is_set'))
         except Exception:
             pass
+
+        # Build the list of directories that participate in size/scan/load.
+        scan_paths = []
+        if not custom_only:
+            scan_paths.append(wildcards_path)
+        if custom_wildcards_path and os.path.exists(custom_wildcards_path):
+            scan_paths.append(custom_wildcards_path)
+
+        # Calculate total size of wildcard files (with early termination)
+        cache_limit = get_cache_limit()
+        total_size = 0
+        for p in scan_paths:
+            if total_size >= cache_limit:
+                break
+            total_size += calculate_directory_size(p, limit=cache_limit - total_size)
 
         # Determine loading mode based on total size
         if total_size >= cache_limit:
@@ -1220,15 +1190,11 @@ def wildcard_load():
                         f"Using on-demand loading mode (TXT files loaded dynamically).")
 
             # On-demand mode: Scan for TXT file metadata and load YAML files immediately
-            # Metadata scan discovers TXT files without loading their content
-            txt_count = scan_wildcard_metadata(wildcards_path)
-            if custom_wildcards_path and os.path.exists(custom_wildcards_path):
-                txt_count += scan_wildcard_metadata(custom_wildcards_path)
-
-            # Load YAML files immediately (limitation: YAML keys are inside file content)
-            yaml_count = load_yaml_files_only(wildcards_path)
-            if custom_wildcards_path and os.path.exists(custom_wildcards_path):
-                yaml_count += load_yaml_files_only(custom_wildcards_path)
+            txt_count = 0
+            yaml_count = 0
+            for p in scan_paths:
+                txt_count += scan_wildcard_metadata(p)
+                yaml_count += load_yaml_files_only(p)
 
             logging.info(f"[Impact Pack] On-demand mode active. "
                         f"Discovered {txt_count} TXT wildcards (metadata only). "
@@ -1240,12 +1206,14 @@ def wildcard_load():
                         f"Using full cache mode.")
 
             # Full cache mode: load all data immediately (original behavior)
-            read_wildcard_dict(wildcards_path, on_demand=False)
+            for p in scan_paths:
+                try:
+                    read_wildcard_dict(p, on_demand=False)
+                except Exception:
+                    logging.info(f"[Impact Pack] Failed to load wildcards directory: {p}")
 
-            try:
-                if custom_wildcards_path:
-                    read_wildcard_dict(custom_wildcards_path, on_demand=False)
-            except Exception:
-                logging.info("[Impact Pack] Failed to load custom wildcards directory.")
+        if custom_only:
+            logging.info(f"[Impact Pack] custom_wildcards is set -> using ONLY "
+                        f"{custom_wildcards_path} (default 'wildcards/' directory is ignored).")
 
         logging.info("[Impact Pack] Wildcards loading done.")

@@ -19,6 +19,7 @@ def write_config():
                             'custom_wildcards': get_config()['custom_wildcards'],
                             'disable_gpu_opencv': get_config()['disable_gpu_opencv'],
                             'wildcard_cache_limit_mb': str(get_config()['wildcard_cache_limit_mb']),
+                            'wildcard_no_cache': str(get_config()['wildcard_no_cache']),
                         }
     with open(config_path, 'w') as configfile:
         config.write(configfile)
@@ -31,11 +32,16 @@ def read_config():
         default_conf = config['default']
 
         # Strip quotes from custom_wildcards path if present
-        custom_wildcards_path = default_conf.get('custom_wildcards', '').strip('\'"')
+        raw_custom_wildcards = default_conf.get('custom_wildcards', '').strip('\'"')
+        # custom_wildcards is considered "explicitly set" only when user provided a
+        # non-empty value AND the path exists on disk. This drives custom-only mode.
+        custom_wildcards_is_set = bool(raw_custom_wildcards) and os.path.isdir(raw_custom_wildcards)
 
-        if not os.path.exists(custom_wildcards_path):
-            logging.warning(f"[Impact Pack] custom_wildcards path not found: {custom_wildcards_path}. Using default path.")
+        if not os.path.exists(raw_custom_wildcards):
+            logging.warning(f"[Impact Pack] custom_wildcards path not found: {raw_custom_wildcards}. Using default path.")
             custom_wildcards_path = os.path.join(my_path, "..", "..", "custom_wildcards")
+        else:
+            custom_wildcards_path = raw_custom_wildcards
 
         default_conf['custom_wildcards'] = custom_wildcards_path
 
@@ -48,12 +54,19 @@ def read_config():
                 logging.warning(f"[Impact Pack] Invalid wildcard_cache_limit_mb value: {default_conf['wildcard_cache_limit_mb']}. Using default: 50")
                 cache_limit_mb = 50
 
+        # Personal-fork default: skip wildcard caching and re-read files on every access
+        no_cache = True
+        if 'wildcard_no_cache' in default_conf:
+            no_cache = default_conf['wildcard_no_cache'].strip().lower() != 'false'
+
         return {
                     'sam_editor_cpu': default_conf['sam_editor_cpu'].lower() == 'true' if 'sam_editor_cpu' in default_conf else False,
                     'sam_editor_model': default_conf['sam_editor_model'].lower() if 'sam_editor_model' else 'sam_vit_b_01ec64.pth',
                     'custom_wildcards': default_conf['custom_wildcards'] if 'custom_wildcards' in default_conf else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "custom_wildcards")),
+                    'custom_wildcards_is_set': custom_wildcards_is_set,
                     'disable_gpu_opencv': default_conf['disable_gpu_opencv'].lower() == 'true' if 'disable_gpu_opencv' in default_conf else True,
-                    'wildcard_cache_limit_mb': cache_limit_mb
+                    'wildcard_cache_limit_mb': cache_limit_mb,
+                    'wildcard_no_cache': no_cache,
                }
 
     except Exception:
@@ -61,8 +74,10 @@ def read_config():
             'sam_editor_cpu': False,
             'sam_editor_model': 'sam_vit_b_01ec64.pth',
             'custom_wildcards': os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "custom_wildcards")),
+            'custom_wildcards_is_set': False,
             'disable_gpu_opencv': True,
-            'wildcard_cache_limit_mb': 50
+            'wildcard_cache_limit_mb': 50,
+            'wildcard_no_cache': True,
         }
 
 
