@@ -691,14 +691,53 @@ def process(text, seed=None):
         return options
 
     def replace_wildcard(string):
-        pattern = r"__([\w.\-+/*\\]+?)__"
+        pattern = r"__([\w.\-+/*\\]+?)(?:#(\d+))?__"
         matches = re.findall(pattern, string)
 
         replacements_found = False
 
-        for match in matches:
+        for match, fixed_index in matches:
             keyword = match.lower()
             keyword = wildcard_normalize(keyword)
+            full_token = f"__{match}#{fixed_index}__" if fixed_index else f"__{match}__"
+
+            if fixed_index:
+                # Fixed-line selection (__name#N__): only allowed for an exact,
+                # single .txt wildcard file. N is 1-based over the filtered
+                # (comment/blank-stripped) option list, matching random selection.
+                if '*' in keyword:
+                    raise ValueError(
+                        f"[Impact Pack] Fixed-line wildcard syntax cannot be combined "
+                        f"with a glob pattern: '{full_token}'")
+
+                file_path, is_yaml = find_wildcard_file(keyword)
+                if file_path is None:
+                    raise ValueError(
+                        f"[Impact Pack] Wildcard file not found for '__{keyword}__' "
+                        f"(used with fixed-line syntax '{full_token}')")
+                if is_yaml:
+                    raise ValueError(
+                        f"[Impact Pack] Fixed-line wildcard syntax only supports .txt "
+                        f"wildcard files; '__{keyword}__' resolves to a YAML source "
+                        f"('{full_token}')")
+
+                options = get_wildcard_value(keyword)
+                if not options:
+                    raise ValueError(
+                        f"[Impact Pack] Wildcard '__{keyword}__' has no usable lines "
+                        f"for fixed-line syntax '{full_token}'")
+
+                idx = int(fixed_index)
+                if idx < 1 or idx > len(options):
+                    raise ValueError(
+                        f"[Impact Pack] Fixed-line index {idx} is out of range for "
+                        f"'__{keyword}__' (valid range: 1-{len(options)}, '{full_token}')")
+
+                selected_item = options[idx - 1]
+                replacement = re.sub(r'^\s*[0-9.]+::', '', selected_item, count=1)
+                replacements_found = True
+                string = string.replace(full_token, replacement, 1)
+                continue
 
             # Use get_wildcard_value for on-demand loading support
             options = get_wildcard_value(keyword)
