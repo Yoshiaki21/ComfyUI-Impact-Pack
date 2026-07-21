@@ -1,5 +1,5 @@
 [project]
-name = "comfyui-impact-pack"
+name = "comfyui-impact-pack-yoshiaki21"
 description = "This node pack offers various detector nodes and detailer nodes that allow you to configure a workflow that automatically enhances facial details. And provide iterative upscaler."
 version = "8.28.3"
 license = { file = "LICENSE.txt" }
@@ -17,10 +17,10 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/ltdrdata/ComfyUI-Impact-Pack"
+Repository = "https://github.com/Yoshiaki21/ComfyUI-Impact-Pack"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
-PublisherId = "drltdata"
-DisplayName = "ComfyUI Impact Pack"
+PublisherId = "yoshiaki21"
+DisplayName = "ComfyUI-Impact-Pack (custom)"
 Icon = ""
